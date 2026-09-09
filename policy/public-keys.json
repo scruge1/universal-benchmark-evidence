@@ -1,9 +1,25 @@
 {
   "schema": "universal-benchmark-public-key-map/v1",
-  "revision": 1,
-  "effective_at": "bootstrap",
-  "event_sha256": [],
-  "keys": {},
-  "principals": {},
+  "revision": 2,
+  "effective_at": "2026-09-09T12:28:53Z",
+  "event_sha256": [
+    "e03953b0cacb230b48d06bfb27164e7df6173d55b84e527601acdc18d1cf023d"
+  ],
+  "keys": {
+    "7768796e9f50ee4858598b5c7812071cf34c12f034df6c56d9cba8018d2fe30f": "VYD2K90wpn/YhhyiEuEY4mKltM7tbsor2CwzvdZJnyY="
+  },
+  "principals": {
+    "7768796e9f50ee4858598b5c7812071cf34c12f034df6c56d9cba8018d2fe30f": {
+      "principal_id": "synthetic-rg14-issuer",
+      "roles": [
+        "issuer"
+      ],
+      "enrolled_revision": 2,
+      "enrolled_at": "2026-09-09T12:28:53Z",
+      "status": "active",
+      "revoked_revision": null,
+      "revoked_at": null
+    }
+  },
   "authority": "derived_current_public_key_roles_only_no_private_key_or_evidence_approval"
 }
