@@ -1,7 +1,7 @@
 # Universal Benchmark Evidence Exchange
 
-This is the offline candidate for the public data plane used by Universal
-Benchmark Router. It keeps software and evidence separate.
+This is the public reviewed data plane used by Universal Benchmark Router. It
+keeps software and evidence separate.
 
 ## Where contributor data goes
 
@@ -38,8 +38,9 @@ python tools/verify_exchange.py --root .
 python -m unittest discover -s tests -v
 ```
 
-The current repository is an offline candidate. It has no real key, real
-evidence, public catalog, endpoint, host, dashboard, or rig authority.
+The public exchange is active as a reviewed transport but is still empty. It
+has no real key, real evidence, public catalog, endpoint, host, dashboard, or
+rig authority.
 
 ## Key enrollment
 
