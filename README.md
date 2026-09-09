@@ -1,5 +1,7 @@
 # Universal Benchmark Evidence Exchange
 
+Synthetic RG14 mixed-path negative control. This line must never merge.
+
 This is the public reviewed data plane used by Universal Benchmark Router. It
 keeps software and evidence separate.
 
