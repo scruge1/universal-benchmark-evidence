@@ -452,29 +452,87 @@ def verify_exchange(root: Path) -> dict[str, Any]:
         "queue_counts": {area: len(items) for area, items in sorted(documents.items())},
         "registry_audit_sha256": canonical_sha256(audit),
         "authority": "offline_reviewed_queue_verification_only_no_blessing_or_publication",
-        "hosted_activation": "requires_queue_only_protected_ruleset_and_trusted_base_verifier",
+        "hosted_activation": "requires_protected_ruleset_and_trusted_base_pull_request_classifier",
     }
 
 
-def _changed_paths(root: Path, changed_range: str) -> list[str]:
+def _changed_entries(root: Path, changed_range: str) -> list[tuple[str, str]]:
     completed = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMR", changed_range],
+        ["git", "diff", "--name-status", "--no-renames", changed_range],
         cwd=root,
         check=True,
         capture_output=True,
         text=True,
     )
-    return [line.strip().replace("\\", "/") for line in completed.stdout.splitlines() if line.strip()]
+    entries: list[tuple[str, str]] = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 2 or len(fields[0]) != 1:
+            raise ExchangeVerificationError(f"unsafe git change record: {line}")
+        entries.append((fields[0], fields[1].replace("\\", "/")))
+    return entries
+
+
+def _verify_safe_json_path(path: str) -> None:
+    if path.startswith("/") or ".." in Path(path).parts or not path.endswith(".json"):
+        raise ExchangeVerificationError(f"unsafe pull-request path: {path}")
+
+
+def _verify_queue_path(path: str) -> None:
+    _verify_safe_json_path(path)
+    for prefix in CONTRIBUTOR_PREFIXES:
+        if path.startswith(prefix):
+            name = path.removeprefix(prefix)
+            if "/" not in name and SHA256_RE.fullmatch(Path(name).stem):
+                return
+    raise ExchangeVerificationError(f"contributor changes are exact queue objects only: {path}")
 
 
 def verify_contributor_paths(paths: list[str]) -> None:
     if not paths:
         raise ExchangeVerificationError("contributor change set must not be empty")
     for path in paths:
-        if path.startswith("/") or ".." in Path(path).parts or not path.endswith(".json"):
-            raise ExchangeVerificationError(f"unsafe contributor path: {path}")
-        if not path.startswith(CONTRIBUTOR_PREFIXES):
-            raise ExchangeVerificationError(f"contributor changes are queue-only: {path}")
+        _verify_queue_path(path)
+
+
+def verify_pull_request_changes(entries: list[tuple[str, str]]) -> str:
+    if not entries:
+        raise ExchangeVerificationError("pull-request change set must not be empty")
+    paths = [path for _, path in entries]
+    if all(path.startswith("queue/") for path in paths):
+        for status, path in entries:
+            if status != "A":
+                raise ExchangeVerificationError(f"queue objects must be added, not {status}: {path}")
+            _verify_queue_path(path)
+        return "queue_additions"
+
+    if len(entries) != 2:
+        raise ExchangeVerificationError("key-lifecycle changes require exactly one event and one snapshot")
+    event_entries = [
+        (status, path)
+        for status, path in entries
+        if path.startswith("policy/key-events/")
+    ]
+    snapshot_entries = [entry for entry in entries if entry[1] == "policy/public-keys.json"]
+    if len(event_entries) != 1 or len(snapshot_entries) != 1:
+        raise ExchangeVerificationError(
+            "pull requests are queue additions or one exact key-lifecycle event and snapshot"
+        )
+    event_status, event_path = event_entries[0]
+    snapshot_status, _ = snapshot_entries[0]
+    _verify_safe_json_path(event_path)
+    event_name = event_path.removeprefix("policy/key-events/")
+    if (
+        event_status != "A"
+        or "/" in event_name
+        or not SHA256_RE.fullmatch(Path(event_name).stem)
+    ):
+        raise ExchangeVerificationError(f"key event must be one added content-addressed object: {event_path}")
+    if snapshot_status != "M":
+        raise ExchangeVerificationError("the derived public-key snapshot must be modified exactly once")
+    return "key_lifecycle"
 
 
 def main() -> int:
@@ -484,7 +542,7 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     if args.changed_range:
-        verify_contributor_paths(_changed_paths(root, args.changed_range))
+        verify_pull_request_changes(_changed_entries(root, args.changed_range))
     print(json.dumps(verify_exchange(root), sort_keys=True, separators=(",", ":")))
     return 0
 

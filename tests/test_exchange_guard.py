@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,10 +21,12 @@ sys.path.insert(0, str(ROOT / "tools"))
 from verify_exchange import (  # noqa: E402
     ExchangeVerificationError,
     RAW_MANIFEST_SCHEMA,
+    _changed_entries,
     _require_role,
     derive_key_snapshot,
     verify_contributor_paths,
     verify_exchange,
+    verify_pull_request_changes,
 )
 from universal_benchmark_registry import canonical_json_bytes  # noqa: E402
 from universal_model_router import canonical_sha256  # noqa: E402
@@ -136,10 +139,83 @@ class ExchangeGuardTests(unittest.TestCase):
         self.assertTrue(all(count == 0 for count in report["queue_counts"].values()))
 
     def test_contributor_changes_are_queue_only_json(self) -> None:
-        verify_contributor_paths(["queue/results/" + "a" * 64 + ".json"])
-        for path in ("tools/verify_exchange.py", "queue/README.md", "../escape.json"):
+        path = "queue/results/" + "a" * 64 + ".json"
+        verify_contributor_paths([path])
+        self.assertEqual("queue_additions", verify_pull_request_changes([("A", path)]))
+        for path in (
+            "tools/verify_exchange.py",
+            "queue/README.md",
+            "queue/results/nested/" + "a" * 64 + ".json",
+            "queue/results/not-a-digest.json",
+            "../escape.json",
+        ):
             with self.subTest(path=path), self.assertRaises(ExchangeVerificationError):
                 verify_contributor_paths([path])
+
+    def test_queue_pull_requests_are_add_only_and_cannot_mix_policy(self) -> None:
+        queue_path = "queue/results/" + "a" * 64 + ".json"
+        for status in ("M", "D", "T"):
+            with self.subTest(status=status), self.assertRaises(ExchangeVerificationError):
+                verify_pull_request_changes([(status, queue_path)])
+        with self.assertRaises(ExchangeVerificationError):
+            verify_pull_request_changes(
+                [("A", queue_path), ("M", "policy/public-keys.json")]
+            )
+
+    def test_exact_key_lifecycle_pull_request_shape_passes(self) -> None:
+        event_path = "policy/key-events/" + "a" * 64 + ".json"
+        self.assertEqual(
+            "key_lifecycle",
+            verify_pull_request_changes(
+                [("A", event_path), ("M", "policy/public-keys.json")]
+            ),
+        )
+
+    def test_inexact_key_lifecycle_pull_request_shapes_fail(self) -> None:
+        event_path = "policy/key-events/" + "a" * 64 + ".json"
+        invalid_entries = (
+            [],
+            [("A", event_path)],
+            [("A", event_path), ("A", "policy/public-keys.json")],
+            [("M", event_path), ("M", "policy/public-keys.json")],
+            [("D", event_path), ("M", "policy/public-keys.json")],
+            [("A", "policy/key-events/not-a-digest.json"), ("M", "policy/public-keys.json")],
+            [("A", "policy/key-events/nested/" + "a" * 64 + ".json"), ("M", "policy/public-keys.json")],
+            [("A", event_path), ("M", "policy/exchange-policy.json")],
+            [("A", event_path), ("M", "policy/public-keys.json"), ("M", "README.md")],
+            [("R", event_path), ("M", "policy/public-keys.json")],
+        )
+        for entries in invalid_entries:
+            with self.subTest(entries=entries), self.assertRaises(ExchangeVerificationError):
+                verify_pull_request_changes(entries)
+
+    def test_real_git_diff_reaches_full_key_lifecycle_verification(self) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        subprocess.run(["git", "config", "user.name", "Synthetic Test"], cwd=self.root, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "synthetic@example.invalid"],
+            cwd=self.root,
+            check=True,
+        )
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "baseline"], cwd=self.root, check=True)
+        base = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        self._key_event("enroll", 2, "synthetic-issuer", ["issuer"], "git-diff")
+        self._refresh_key_snapshot()
+        subprocess.run(["git", "add", "-A"], cwd=self.root, check=True)
+        subprocess.run(["git", "commit", "-qm", "synthetic enrollment"], cwd=self.root, check=True)
+
+        entries = _changed_entries(self.root, f"{base}..HEAD")
+        self.assertEqual("key_lifecycle", verify_pull_request_changes(entries))
+        report = verify_exchange(self.root)
+        self.assertEqual(1, report["public_key_count"])
 
     def test_wrong_content_address_fails(self) -> None:
         document = raw_manifest()

@@ -81,6 +81,12 @@ both files in a maintainer-controlled pull request:
 python tools/compile_key_policy.py --root . --output public-keys.candidate.json
 ```
 
+That pull request must contain exactly one added content-addressed event and
+one modified `policy/public-keys.json`. The trusted-base verifier rejects mixed
+queue data, another policy path, an event edit or delete, or a snapshot that is
+not the exact derivation. A green check validates the submitted bytes. It does
+not approve identity, grant a role, or merge the change.
+
 Issuer, contributor, and validator are explicit roles. A contributor and their
 independent validator must use distinct keys and distinct reviewed principals.
 The public-key comment is discarded because it is not identity evidence and

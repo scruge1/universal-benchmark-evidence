@@ -7,10 +7,12 @@
 - Reuse the pinned Universal Benchmark Router release for signatures, ordered
   intake, registry audit, catalog qualification, and routing semantics.
 - Contributor pull requests may add files only under `queue/`.
+- A maintainer key-lifecycle pull request contains exactly one added
+  content-addressed event and one modified derived public-key snapshot. It must
+  not contain queue data or another path.
 - Never store a private key, token, endpoint credential, personal data, or
   private prompt in this repository.
 - Never edit or delete an accepted queue identity. Add a new document and use
   the contract's correction mechanism.
 - Run `python tools/verify_exchange.py --root .` and the test suite before
   claiming a local candidate is ready.
-

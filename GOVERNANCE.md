@@ -39,3 +39,8 @@ Real-person mappings and identity evidence remain outside this public
 repository. Public-key comments are not identity evidence and are not retained.
 Private keys never enter repository or agent custody. Each enrollment is a
 separate maintainer-reviewed change; a compiled candidate has no authority.
+The trusted-base pull-request classifier permits exactly one added
+content-addressed key event and one modified derived snapshot. It rejects mixed
+queue and policy changes and all other control-plane paths. Passing this byte
+and policy check does not approve identity or role and does not merge the
+change.
