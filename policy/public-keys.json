@@ -1,8 +1,9 @@
 {
   "schema": "universal-benchmark-public-key-map/v1",
   "revision": 1,
-  "effective_at": "2026-09-09T00:00:00Z",
+  "effective_at": "bootstrap",
+  "event_sha256": [],
   "keys": {},
-  "authority": "no_real_keys_enrolled_offline_candidate_only"
+  "principals": {},
+  "authority": "derived_current_public_key_roles_only_no_private_key_or_evidence_approval"
 }
-

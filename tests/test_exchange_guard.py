@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
 import shutil
@@ -16,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from verify_exchange import (  # noqa: E402
     ExchangeVerificationError,
     RAW_MANIFEST_SCHEMA,
+    derive_key_snapshot,
     verify_contributor_paths,
     verify_exchange,
 )
@@ -60,6 +62,31 @@ class ExchangeGuardTests(unittest.TestCase):
         value = canonical_json_bytes(document) if canonical else json.dumps(document, indent=2).encode("utf-8")
         path.write_bytes(value)
         return path
+
+    def _key_event(self, event_type: str, revision: int, principal: str, roles: list[str], label: str) -> tuple[str, str]:
+        public_bytes = hashlib.sha256(("public-" + label).encode()).digest()
+        key_id = hashlib.sha256(public_bytes).hexdigest()
+        encoded = base64.b64encode(public_bytes).decode("ascii")
+        document = {
+            "schema": "universal-benchmark-key-event/v1",
+            "event_type": event_type,
+            "effective_revision": revision,
+            "event_at": f"2026-09-09T00:00:{revision:02d}Z",
+            "key_id": key_id,
+            "principal_id": principal,
+            "roles": roles if event_type == "enroll" else [],
+            "public_key": encoded if event_type == "enroll" else None,
+            "reason": "synthetic contract test",
+            "authority": "maintainer_reviewed_key_lifecycle_event_only",
+        }
+        digest = canonical_sha256(document)
+        (self.root / "policy" / "key-events" / f"{digest}.json").write_bytes(canonical_json_bytes(document))
+        return key_id, encoded
+
+    def _refresh_key_snapshot(self) -> dict[str, object]:
+        snapshot = derive_key_snapshot(self.root, 1_048_576)
+        (self.root / "policy" / "public-keys.json").write_bytes(json.dumps(snapshot, indent=2).encode("utf-8"))
+        return snapshot
 
     def test_empty_offline_candidate_passes_without_any_real_authority(self) -> None:
         report = verify_exchange(self.root)
@@ -117,7 +144,7 @@ class ExchangeGuardTests(unittest.TestCase):
             "evidence": {"raw_manifest_sha256": "0" * 64},
         }
         self._queue_path("contributions", document)
-        with self.assertRaisesRegex(ExchangeVerificationError, "exact raw manifest"):
+        with self.assertRaisesRegex(ExchangeVerificationError, "active contributor key enrollment"):
             verify_exchange(self.root)
 
     def test_public_key_map_cannot_bind_wrong_identity(self) -> None:
@@ -125,8 +152,55 @@ class ExchangeGuardTests(unittest.TestCase):
         document = json.loads(path.read_text(encoding="utf-8"))
         document["keys"] = {"0" * 64: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
         path.write_text(json.dumps(document), encoding="utf-8")
-        with self.assertRaisesRegex(ExchangeVerificationError, "public key identity drift"):
+        with self.assertRaisesRegex(ExchangeVerificationError, "snapshot differs"):
             verify_exchange(self.root)
+
+    def test_distinct_role_enrollments_derive_exact_snapshot(self) -> None:
+        self._key_event("enroll", 2, "issuer-person", ["issuer"], "issuer")
+        self._key_event("enroll", 3, "contributor-person", ["contributor"], "contributor")
+        self._key_event("enroll", 4, "validator-person", ["validator"], "validator")
+        snapshot = self._refresh_key_snapshot()
+        report = verify_exchange(self.root)
+        self.assertEqual(3, report["public_key_count"])
+        self.assertEqual(4, snapshot["revision"])
+
+    def test_one_key_cannot_hold_contributor_and_validator_roles(self) -> None:
+        self._key_event("enroll", 2, "one-person", ["contributor", "validator"], "one")
+        with self.assertRaisesRegex(ExchangeVerificationError, "one key"):
+            derive_key_snapshot(self.root, 1_048_576)
+
+    def test_one_principal_cannot_split_contributor_and_validator_keys(self) -> None:
+        self._key_event("enroll", 2, "one-person", ["contributor"], "first")
+        self._key_event("enroll", 3, "one-person", ["validator"], "second")
+        with self.assertRaisesRegex(ExchangeVerificationError, "one principal"):
+            derive_key_snapshot(self.root, 1_048_576)
+
+    def test_revocation_removes_active_key_without_removing_events(self) -> None:
+        key_id, _ = self._key_event("enroll", 2, "retired-person", ["contributor"], "retired")
+        document = {
+            "schema": "universal-benchmark-key-event/v1",
+            "event_type": "revoke",
+            "effective_revision": 3,
+            "event_at": "2026-09-09T00:00:03Z",
+            "key_id": key_id,
+            "principal_id": "retired-person",
+            "roles": [],
+            "public_key": None,
+            "reason": "synthetic retirement",
+            "authority": "maintainer_reviewed_key_lifecycle_event_only",
+        }
+        digest = canonical_sha256(document)
+        (self.root / "policy" / "key-events" / f"{digest}.json").write_bytes(canonical_json_bytes(document))
+        snapshot = self._refresh_key_snapshot()
+        self.assertIn(key_id, snapshot["keys"])
+        self.assertEqual("revoked", snapshot["principals"][key_id]["status"])
+        self.assertEqual(2, len(snapshot["event_sha256"]))
+        verify_exchange(self.root)
+
+    def test_key_event_revision_gap_fails(self) -> None:
+        self._key_event("enroll", 3, "late-person", ["issuer"], "late")
+        with self.assertRaisesRegex(ExchangeVerificationError, "contiguous"):
+            derive_key_snapshot(self.root, 1_048_576)
 
     def test_router_version_drift_fails(self) -> None:
         path = self.root / "policy" / "software-release.json"

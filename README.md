@@ -41,3 +41,18 @@ python -m unittest discover -s tests -v
 The current repository is an offline candidate. It has no real key, real
 evidence, public catalog, endpoint, host, dashboard, or rig authority.
 
+## Key enrollment
+
+Key authority comes from append-only canonical events under
+`policy/key-events/`. `policy/public-keys.json` is a derived current snapshot.
+It must not be edited as an independent trust source. Compile a candidate to an
+absent output, review its exact difference, then replace the snapshot only in a
+maintainer-controlled change:
+
+```text
+python tools/compile_key_policy.py --root . --output public-keys.candidate.json
+```
+
+Issuer, contributor, and validator are explicit roles. A contributor and their
+independent validator must use distinct keys and distinct reviewed principals.
+Private keys remain outside this repository and every agent context.

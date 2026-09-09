@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/scruge1/universal-benchmark-evidence/schemas/key-event.schema.json",
+  "title": "Universal Benchmark Key Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "reason", "authority"],
+  "properties": {
+    "schema": {"const": "universal-benchmark-key-event/v1"},
+    "event_type": {"enum": ["enroll", "revoke"]},
+    "effective_revision": {"type": "integer", "minimum": 2},
+    "event_at": {"type": "string", "format": "date-time"},
+    "key_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "principal_id": {"type": "string", "minLength": 1},
+    "roles": {"type": "array", "uniqueItems": true, "items": {"enum": ["issuer", "contributor", "validator"]}},
+    "public_key": {"type": ["string", "null"]},
+    "reason": {"type": "string", "minLength": 1},
+    "authority": {"const": "maintainer_reviewed_key_lifecycle_event_only"}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "enroll"}}}, "then": {"properties": {"roles": {"minItems": 1}, "public_key": {"type": "string"}}}},
+    {"if": {"properties": {"event_type": {"const": "revoke"}}}, "then": {"properties": {"roles": {"maxItems": 0}, "public_key": {"type": "null"}}}}
+  ]
+}

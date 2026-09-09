@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -38,6 +39,8 @@ from universal_model_router import canonical_sha256
 RAW_MANIFEST_SCHEMA = "universal-benchmark-raw-manifest/v1"
 POLICY_SCHEMA = "universal-benchmark-exchange-software-policy/v1"
 KEY_MAP_SCHEMA = "universal-benchmark-public-key-map/v1"
+KEY_EVENT_SCHEMA = "universal-benchmark-key-event/v1"
+KEY_ROLES = {"issuer", "contributor", "validator"}
 DOCUMENT_AREAS = {
     REQUEST_SCHEMA: "requests",
     CONTRIBUTION_SCHEMA: "contributions",
@@ -89,7 +92,124 @@ def _load_json(path: Path, *, max_bytes: int | None = None) -> Any:
         raise ExchangeVerificationError(f"strict UTF-8 JSON is required: {path}") from exc
 
 
-def _validate_policy(root: Path) -> tuple[Mapping[str, Any], Mapping[str, str]]:
+def _validate_public_key(key_id: Any, encoded: Any, path: str) -> None:
+    if not isinstance(key_id, str) or not SHA256_RE.fullmatch(key_id) or not isinstance(encoded, str):
+        raise ExchangeVerificationError(f"{path}: SHA-256 and base64 public key are required")
+    try:
+        public_bytes = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise ExchangeVerificationError(f"{path}: invalid public key encoding") from exc
+    if len(public_bytes) != 32 or hashlib.sha256(public_bytes).hexdigest() != key_id:
+        raise ExchangeVerificationError(f"public key identity drift: {key_id}")
+
+
+def _timestamp(value: Any, path: str) -> datetime:
+    if not isinstance(value, str):
+        raise ExchangeVerificationError(f"{path}: timestamp is required")
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ExchangeVerificationError(f"{path}: invalid timestamp") from exc
+    if result.tzinfo is None:
+        raise ExchangeVerificationError(f"{path}: timezone is required")
+    return result.astimezone(timezone.utc)
+
+
+def _key_events(root: Path, max_bytes: int) -> list[tuple[str, Mapping[str, Any]]]:
+    events: list[tuple[str, Mapping[str, Any]]] = []
+    event_root = root / "policy" / "key-events"
+    for path in sorted(event_root.glob("*")):
+        if path.is_symlink():
+            raise ExchangeVerificationError(f"links are forbidden: {path}")
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix != ".json":
+            raise ExchangeVerificationError(f"key event must be JSON: {path.name}")
+        document = _exact(
+            _load_json(path, max_bytes=max_bytes),
+            {"schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "reason", "authority"},
+            "$key_event",
+        )
+        canonical = canonical_json_bytes(document)
+        digest = sha256_bytes(canonical)
+        if path.stem != digest or path.read_bytes() != canonical:
+            raise ExchangeVerificationError(f"key event must use canonical content-addressed bytes: {path.name}")
+        if document["schema"] != KEY_EVENT_SCHEMA or document["event_type"] not in {"enroll", "revoke"}:
+            raise ExchangeVerificationError("unsupported key event schema or type")
+        if not isinstance(document["effective_revision"], int) or document["effective_revision"] < 2:
+            raise ExchangeVerificationError("key event revision must be at least two")
+        if not isinstance(document["principal_id"], str) or not document["principal_id"]:
+            raise ExchangeVerificationError("key event principal is required")
+        if not isinstance(document["reason"], str) or not document["reason"]:
+            raise ExchangeVerificationError("key event reason is required")
+        if document["authority"] != "maintainer_reviewed_key_lifecycle_event_only":
+            raise ExchangeVerificationError("key event authority drift")
+        events.append((digest, document))
+    return sorted(events, key=lambda item: item[1]["effective_revision"])
+
+
+def derive_key_snapshot(root: Path, max_bytes: int) -> dict[str, Any]:
+    events = _key_events(root, max_bytes)
+    active: dict[str, dict[str, Any]] = {}
+    known: dict[str, str] = {}
+    expected_revision = 2
+    previous_time: datetime | None = None
+    for digest, event in events:
+        if event["effective_revision"] != expected_revision:
+            raise ExchangeVerificationError("key event revisions must be contiguous and unique")
+        expected_revision += 1
+        key_id = event["key_id"]
+        principal_id = event["principal_id"]
+        roles = event["roles"]
+        event_time = _timestamp(event["event_at"], "$key_event.event_at")
+        if previous_time is not None and event_time < previous_time:
+            raise ExchangeVerificationError("key event times must be monotonic")
+        previous_time = event_time
+        if event["event_type"] == "enroll":
+            if key_id in known:
+                raise ExchangeVerificationError("a key can be enrolled only once")
+            if not isinstance(roles, list) or not roles or len(roles) != len(set(roles)) or not set(roles) <= KEY_ROLES:
+                raise ExchangeVerificationError("enrollment roles must be a unique non-empty allowed set")
+            if {"contributor", "validator"} <= set(roles):
+                raise ExchangeVerificationError("one key cannot be contributor and validator")
+            _validate_public_key(key_id, event["public_key"], "$key_event.public_key")
+            principal_roles = {role for item in active.values() if item["principal_id"] == principal_id for role in item["roles"]}
+            if "contributor" in principal_roles | set(roles) and "validator" in principal_roles | set(roles):
+                raise ExchangeVerificationError("one principal cannot be contributor and validator")
+            known[key_id] = principal_id
+            active[key_id] = {
+                "public_key": event["public_key"],
+                "principal_id": principal_id,
+                "roles": sorted(roles),
+                "enrolled_revision": event["effective_revision"],
+                "enrolled_at": event["event_at"],
+                "status": "active",
+                "revoked_revision": None,
+                "revoked_at": None,
+            }
+        else:
+            if roles != [] or event["public_key"] is not None:
+                raise ExchangeVerificationError("revocation cannot add key material or roles")
+            if key_id not in active or known.get(key_id) != principal_id:
+                raise ExchangeVerificationError("revocation requires the active matching key and principal")
+            active[key_id]["status"] = "revoked"
+            active[key_id]["revoked_revision"] = event["effective_revision"]
+            active[key_id]["revoked_at"] = event["event_at"]
+    return {
+        "schema": KEY_MAP_SCHEMA,
+        "revision": 1 + len(events),
+        "effective_at": "bootstrap" if not events else events[-1][1]["event_at"],
+        "event_sha256": [digest for digest, _ in events],
+        "keys": {key_id: item["public_key"] for key_id, item in sorted(active.items())},
+        "principals": {
+            key_id: {name: item[name] for name in ("principal_id", "roles", "enrolled_revision", "enrolled_at", "status", "revoked_revision", "revoked_at")}
+            for key_id, item in sorted(active.items())
+        },
+        "authority": "derived_current_public_key_roles_only_no_private_key_or_evidence_approval",
+    }
+
+
+def _validate_policy(root: Path) -> tuple[Mapping[str, Any], Mapping[str, str], Mapping[str, Any]]:
     policy = _exact(
         _load_json(root / "policy" / "software-release.json"),
         {"schema", "router", "max_compact_bytes", "minimum_distinct_contributors", "authority"},
@@ -116,24 +236,29 @@ def _validate_policy(root: Path) -> tuple[Mapping[str, Any], Mapping[str, str]]:
 
     key_doc = _exact(
         _load_json(root / "policy" / "public-keys.json"),
-        {"schema", "revision", "effective_at", "keys", "authority"},
+        {"schema", "revision", "effective_at", "event_sha256", "keys", "principals", "authority"},
         "$public_keys",
     )
-    if key_doc["schema"] != KEY_MAP_SCHEMA or not isinstance(key_doc["revision"], int) or key_doc["revision"] < 1:
-        raise ExchangeVerificationError("$public_keys: supported schema and positive revision are required")
+    derived = derive_key_snapshot(root, int(policy["max_compact_bytes"]))
+    if key_doc != derived:
+        raise ExchangeVerificationError("$public_keys: snapshot differs from append-only key events")
     keys = key_doc["keys"]
-    if not isinstance(keys, Mapping):
-        raise ExchangeVerificationError("$public_keys.keys: object is required")
     for key_id, encoded in keys.items():
-        if not isinstance(key_id, str) or not SHA256_RE.fullmatch(key_id) or not isinstance(encoded, str):
-            raise ExchangeVerificationError("$public_keys.keys: SHA-256 to base64 map is required")
-        try:
-            public_bytes = base64.b64decode(encoded, validate=True)
-        except ValueError as exc:
-            raise ExchangeVerificationError(f"invalid public key encoding: {key_id}") from exc
-        if len(public_bytes) != 32 or hashlib.sha256(public_bytes).hexdigest() != key_id:
-            raise ExchangeVerificationError(f"public key identity drift: {key_id}")
-    return policy, dict(keys)
+        _validate_public_key(key_id, encoded, "$public_keys.keys")
+    return policy, dict(keys), key_doc["principals"]
+
+
+def _require_role(key_id: Any, role: str, principals: Mapping[str, Any], path: str, at: Any) -> Mapping[str, Any]:
+    metadata = principals.get(key_id) if isinstance(key_id, str) else None
+    if not isinstance(metadata, Mapping) or role not in metadata.get("roles", []):
+        raise ExchangeVerificationError(f"{path}: active {role} key enrollment is required")
+    observed = _timestamp(at, path + ".signed_at")
+    if observed < _timestamp(metadata["enrolled_at"], path + ".enrolled_at"):
+        raise ExchangeVerificationError(f"{path}: signer was not enrolled at document time")
+    revoked_at = metadata.get("revoked_at")
+    if revoked_at is not None and observed >= _timestamp(revoked_at, path + ".revoked_at"):
+        raise ExchangeVerificationError(f"{path}: signer was revoked at document time")
+    return metadata
 
 
 def _validate_raw_manifest(document: Mapping[str, Any]) -> None:
@@ -251,7 +376,7 @@ def _package_json(name: str) -> Mapping[str, Any]:
 def verify_exchange(root: Path) -> dict[str, Any]:
     root = root.resolve()
     _audit_workflows(root)
-    policy, public_keys = _validate_policy(root)
+    policy, public_keys, key_principals = _validate_policy(root)
     documents = _queue_documents(root, int(policy["max_compact_bytes"]))
     contract = _package_json("benchmark-capability-contract-v2.json")
     suite = _package_json("standard-task-suite-v1.json")
@@ -266,10 +391,12 @@ def verify_exchange(root: Path) -> dict[str, Any]:
     contributions_by_id: dict[str, Mapping[str, Any]] = {}
     result_submission_hashes: set[str] = set()
     for document in requests.values():
+        _require_role(document.get("issuer", {}).get("public_key_id"), "issuer", key_principals, "$request.issuer", document.get("issued_at"))
         request_id = document.get("request_id")
         if isinstance(request_id, str):
             requests_by_id[request_id] = document
     for digest, document in contributions.items():
+        _require_role(document.get("contributor", {}).get("public_key_id"), "contributor", key_principals, "$contribution.contributor", document.get("observed_at"))
         submission_id = document.get("submission_id")
         if isinstance(submission_id, str):
             contributions_by_id[submission_id] = document
@@ -295,12 +422,18 @@ def verify_exchange(root: Path) -> dict[str, Any]:
             contribution = contributions_by_id.get(submission_id) if isinstance(submission_id, str) else None
             if request is None or contribution is None or canonical_sha256(embedded) != canonical_sha256(contribution):
                 raise ExchangeVerificationError(f"result {digest} has an absent or drifting dependency")
+            _require_role(embedded.get("contributor", {}).get("public_key_id"), "contributor", key_principals, "$result.contributor", embedded.get("observed_at"))
             registry.ingest_result(document, request, contract, suite, public_keys, source_sha256=digest)
             result_submission_hashes.add(canonical_sha256(contribution))
         for digest, document in sorted(acknowledgements.items()):
             contribution = contributions_by_id.get(document.get("submission_id"))
             if contribution is None or canonical_sha256(contribution) not in result_submission_hashes:
                 raise ExchangeVerificationError(f"acknowledgement {digest} requires an accepted result")
+            contributor_meta = _require_role(contribution.get("contributor", {}).get("public_key_id"), "contributor", key_principals, "$acknowledgement.contributor", contribution.get("observed_at"))
+            validator_key = document.get("validator", {}).get("public_key_id")
+            validator_meta = _require_role(validator_key, "validator", key_principals, "$acknowledgement.validator", document.get("acknowledged_at"))
+            if validator_key == contribution.get("contributor", {}).get("public_key_id") or validator_meta["principal_id"] == contributor_meta["principal_id"]:
+                raise ExchangeVerificationError("acknowledgement requires distinct contributor and validator keys and principals")
             registry.ingest_acknowledgement(document, contribution, suite, public_keys, source_sha256=digest)
         audit = registry.audit()
 

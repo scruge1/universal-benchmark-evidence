@@ -24,3 +24,10 @@ queue file. Submit a new identity that names the superseded evidence when the
 document contract supports that relation. Publication policy decides which
 identity is current while retaining the earlier bytes.
 
+## Key lifecycle
+
+`policy/key-events/` is append-only. Enrollment binds a public key to one
+reviewed principal and allowed roles. Revocation removes future authority but
+does not remove the event or earlier signed evidence. The public-key map is
+derived from the complete ordered event set. Contributor and validator roles
+cannot belong to the same key or reviewed principal.
