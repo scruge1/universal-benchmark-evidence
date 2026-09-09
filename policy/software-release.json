@@ -1,0 +1,16 @@
+{
+  "schema": "universal-benchmark-exchange-software-policy/v1",
+  "router": {
+    "repository": "scruge1/universal-benchmark-router",
+    "version": "0.3.0",
+    "tag": "v0.3.0",
+    "commit": "faa7b91471cfd597b0b4b98181bfa6a34781bd4b",
+    "wheel_sha256": "957b5100af942b90c7480bd9403b3168b100f256a54f7d1bc3e3658d9036a04b",
+    "source_sha256": "68abf48620143aa18f646d87978b939cf8f3533e309eda5420ad82e11e863cd6",
+    "certificate_identity": "https://github.com/scruge1/universal-benchmark-router/.github/workflows/release.yml@refs/tags/v0.3.0"
+  },
+  "max_compact_bytes": 1048576,
+  "minimum_distinct_contributors": 2,
+  "authority": "pinned_offline_verifier_dependency_only"
+}
+

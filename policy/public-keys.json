@@ -1,0 +1,8 @@
+{
+  "schema": "universal-benchmark-public-key-map/v1",
+  "revision": 1,
+  "effective_at": "2026-09-09T00:00:00Z",
+  "keys": {},
+  "authority": "no_real_keys_enrolled_offline_candidate_only"
+}
+

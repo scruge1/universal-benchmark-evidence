@@ -1,0 +1,51 @@
+name: evidence-exchange-validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact submitted bytes without retained credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: submitted
+      - name: Check out the trusted base verifier for pull requests
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          path: trusted-base
+      - name: Set up explicit Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Install the exact attested router dependency
+        run: >-
+          python -m pip install --disable-pip-version-check
+          cryptography==46.0.7
+          "universal-benchmark-router @ https://github.com/scruge1/universal-benchmark-router/releases/download/v0.3.0/universal_benchmark_router-0.3.0-py3-none-any.whl#sha256=957b5100af942b90c7480bd9403b3168b100f256a54f7d1bc3e3658d9036a04b"
+      - name: Verify submitted bytes with the trusted base guard
+        if: github.event_name == 'pull_request'
+        run: >-
+          python trusted-base/tools/verify_exchange.py
+          --root submitted
+          --changed-range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+      - name: Verify trusted main after merge or manual dispatch
+        if: github.event_name != 'pull_request'
+        run: python submitted/tools/verify_exchange.py --root submitted
+      - name: Run trusted main contract tests
+        if: github.event_name != 'pull_request'
+        run: python -m unittest discover -s submitted/tests -v

@@ -1,0 +1,3 @@
+cryptography==46.0.7
+universal-benchmark-router @ https://github.com/scruge1/universal-benchmark-router/releases/download/v0.3.0/universal_benchmark_router-0.3.0-py3-none-any.whl#sha256=957b5100af942b90c7480bd9403b3168b100f256a54f7d1bc3e3658d9036a04b
+
