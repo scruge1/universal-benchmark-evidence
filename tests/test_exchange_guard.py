@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-import copy
 import base64
 import hashlib
 import json
 import shutil
+import struct
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +27,27 @@ from verify_exchange import (  # noqa: E402
 )
 from universal_benchmark_registry import canonical_json_bytes  # noqa: E402
 from universal_model_router import canonical_sha256  # noqa: E402
+from key_ceremony import (  # noqa: E402
+    KeyCeremonyError,
+    SSHSIG_NAMESPACE,
+    build_challenge,
+)
+
+
+def ssh_string(value: bytes) -> bytes:
+    return struct.pack(">I", len(value)) + value
+
+
+def sshsig(private_key: Ed25519PrivateKey, message: bytes, *, namespace: str = SSHSIG_NAMESPACE) -> str:
+    public_key = private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    public_blob = ssh_string(b"ssh-ed25519") + ssh_string(public_key)
+    namespace_bytes = namespace.encode("ascii")
+    signed = b"SSHSIG" + ssh_string(namespace_bytes) + ssh_string(b"") + ssh_string(b"sha256") + ssh_string(hashlib.sha256(message).digest())
+    signature_blob = ssh_string(b"ssh-ed25519") + ssh_string(private_key.sign(signed))
+    blob = b"SSHSIG" + struct.pack(">I", 1) + ssh_string(public_blob) + ssh_string(namespace_bytes) + ssh_string(b"") + ssh_string(b"sha256") + ssh_string(signature_blob)
+    encoded = base64.b64encode(blob).decode("ascii")
+    body = "\n".join(encoded[index : index + 76] for index in range(0, len(encoded), 76))
+    return f"-----BEGIN SSH SIGNATURE-----\n{body}\n-----END SSH SIGNATURE-----\n"
 
 
 def raw_manifest(**changes: object) -> dict[str, object]:
@@ -65,11 +89,26 @@ class ExchangeGuardTests(unittest.TestCase):
         return path
 
     def _key_event(self, event_type: str, revision: int, principal: str, roles: list[str], label: str) -> tuple[str, str]:
-        public_bytes = hashlib.sha256(("public-" + label).encode()).digest()
+        private_key = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(("private-" + label).encode()).digest())
+        public_bytes = private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         key_id = hashlib.sha256(public_bytes).hexdigest()
         encoded = base64.b64encode(public_bytes).decode("ascii")
+        possession_proof = None
+        if event_type == "enroll":
+            snapshot = derive_key_snapshot(self.root, 1_048_576)
+            challenge = build_challenge(
+                policy_revision=snapshot["revision"],
+                event_sha256=snapshot["event_sha256"],
+                principal_id=principal,
+                roles=roles,
+                public_key=public_bytes,
+                issued_at="2026-09-09T00:00:00Z",
+                expires_at="2026-09-10T00:00:00Z",
+                nonce=hashlib.sha256(("nonce-" + label).encode()).digest(),
+            )
+            possession_proof = {"challenge": challenge, "sshsig": sshsig(private_key, canonical_json_bytes(challenge))}
         document = {
-            "schema": "universal-benchmark-key-event/v1",
+            "schema": "universal-benchmark-key-event/v2",
             "event_type": event_type,
             "effective_revision": revision,
             "event_at": f"2026-09-09T00:00:{revision:02d}Z",
@@ -77,6 +116,7 @@ class ExchangeGuardTests(unittest.TestCase):
             "principal_id": principal,
             "roles": roles if event_type == "enroll" else [],
             "public_key": encoded if event_type == "enroll" else None,
+            "possession_proof": possession_proof,
             "reason": "synthetic contract test",
             "authority": "maintainer_reviewed_key_lifecycle_event_only",
         }
@@ -166,9 +206,8 @@ class ExchangeGuardTests(unittest.TestCase):
         self.assertEqual(4, snapshot["revision"])
 
     def test_one_key_cannot_hold_contributor_and_validator_roles(self) -> None:
-        self._key_event("enroll", 2, "one-person", ["contributor", "validator"], "one")
-        with self.assertRaisesRegex(ExchangeVerificationError, "one key"):
-            derive_key_snapshot(self.root, 1_048_576)
+        with self.assertRaisesRegex(KeyCeremonyError, "one key"):
+            self._key_event("enroll", 2, "one-person", ["contributor", "validator"], "one")
 
     def test_one_principal_cannot_split_contributor_and_validator_keys(self) -> None:
         self._key_event("enroll", 2, "one-person", ["contributor"], "first")
@@ -179,7 +218,7 @@ class ExchangeGuardTests(unittest.TestCase):
     def test_revocation_removes_active_key_without_removing_events(self) -> None:
         key_id, _ = self._key_event("enroll", 2, "retired-person", ["contributor"], "retired")
         document = {
-            "schema": "universal-benchmark-key-event/v1",
+            "schema": "universal-benchmark-key-event/v2",
             "event_type": "revoke",
             "effective_revision": 3,
             "event_at": "2026-09-09T00:00:03Z",
@@ -187,6 +226,7 @@ class ExchangeGuardTests(unittest.TestCase):
             "principal_id": "retired-person",
             "roles": [],
             "public_key": None,
+            "possession_proof": None,
             "reason": "synthetic retirement",
             "authority": "maintainer_reviewed_key_lifecycle_event_only",
         }
@@ -224,6 +264,26 @@ class ExchangeGuardTests(unittest.TestCase):
     def test_key_event_revision_gap_fails(self) -> None:
         self._key_event("enroll", 3, "late-person", ["issuer"], "late")
         with self.assertRaisesRegex(ExchangeVerificationError, "contiguous"):
+            derive_key_snapshot(self.root, 1_048_576)
+
+    def test_unproved_v1_enrollment_fails(self) -> None:
+        private_key = Ed25519PrivateKey.generate()
+        public_key = private_key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        document = {
+            "schema": "universal-benchmark-key-event/v1",
+            "event_type": "enroll",
+            "effective_revision": 2,
+            "event_at": "2026-09-09T00:00:02Z",
+            "key_id": hashlib.sha256(public_key).hexdigest(),
+            "principal_id": "unproved-owner",
+            "roles": ["issuer"],
+            "public_key": base64.b64encode(public_key).decode("ascii"),
+            "reason": "synthetic bypass attempt",
+            "authority": "maintainer_reviewed_key_lifecycle_event_only",
+        }
+        digest = canonical_sha256(document)
+        (self.root / "policy" / "key-events" / f"{digest}.json").write_bytes(canonical_json_bytes(document))
+        with self.assertRaisesRegex(ExchangeVerificationError, "exact keys"):
             derive_key_snapshot(self.root, 1_048_576)
 
     def test_router_version_drift_fails(self) -> None:

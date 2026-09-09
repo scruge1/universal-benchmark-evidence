@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/scruge1/universal-benchmark-evidence/schemas/key-event.schema.json",
-  "title": "Universal Benchmark Key Event",
+  "title": "Universal Benchmark Key Event v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "reason", "authority"],
+  "required": ["schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "possession_proof", "reason", "authority"],
   "properties": {
-    "schema": {"const": "universal-benchmark-key-event/v1"},
+    "schema": {"const": "universal-benchmark-key-event/v2"},
     "event_type": {"enum": ["enroll", "revoke"]},
     "effective_revision": {"type": "integer", "minimum": 2},
     "event_at": {"type": "string", "format": "date-time"},
@@ -14,11 +14,38 @@
     "principal_id": {"type": "string", "minLength": 1},
     "roles": {"type": "array", "uniqueItems": true, "items": {"enum": ["issuer", "contributor", "validator"]}},
     "public_key": {"type": ["string", "null"]},
+    "possession_proof": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["challenge", "sshsig"],
+      "properties": {
+        "challenge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schema", "repository", "policy_revision", "event_sha256", "principal_id", "roles", "public_key", "key_id", "issued_at", "expires_at", "nonce", "authority"],
+          "properties": {
+            "schema": {"const": "universal-benchmark-key-possession-challenge/v1"},
+            "repository": {"const": "https://github.com/scruge1/universal-benchmark-evidence"},
+            "policy_revision": {"type": "integer", "minimum": 1},
+            "event_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}},
+            "principal_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$"},
+            "roles": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["issuer", "contributor", "validator"]}},
+            "public_key": {"type": "string"},
+            "key_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "issued_at": {"type": "string", "format": "date-time"},
+            "expires_at": {"type": "string", "format": "date-time"},
+            "nonce": {"type": "string"},
+            "authority": {"const": "proof_of_possession_challenge_only_no_identity_or_role_authority"}
+          }
+        },
+        "sshsig": {"type": "string", "minLength": 1}
+      }
+    },
     "reason": {"type": "string", "minLength": 1},
     "authority": {"const": "maintainer_reviewed_key_lifecycle_event_only"}
   },
   "allOf": [
-    {"if": {"properties": {"event_type": {"const": "enroll"}}}, "then": {"properties": {"roles": {"minItems": 1}, "public_key": {"type": "string"}}}},
-    {"if": {"properties": {"event_type": {"const": "revoke"}}}, "then": {"properties": {"roles": {"maxItems": 0}, "public_key": {"type": "null"}}}}
+    {"if": {"properties": {"event_type": {"const": "enroll"}}}, "then": {"properties": {"roles": {"minItems": 1}, "public_key": {"type": "string"}, "possession_proof": {"type": "object"}}}},
+    {"if": {"properties": {"event_type": {"const": "revoke"}}}, "then": {"properties": {"roles": {"maxItems": 0}, "public_key": {"type": "null"}, "possession_proof": {"type": "null"}}}}
   ]
 }

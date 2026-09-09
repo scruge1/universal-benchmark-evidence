@@ -45,9 +45,36 @@ evidence, public catalog, endpoint, host, dashboard, or rig authority.
 
 Key authority comes from append-only canonical events under
 `policy/key-events/`. `policy/public-keys.json` is a derived current snapshot.
-It must not be edited as an independent trust source. Compile a candidate to an
-absent output, review its exact difference, then replace the snapshot only in a
-maintainer-controlled change:
+It must not be edited as an independent trust source. Enrollment is one event
+per reviewed change and requires proof that the claimant controls the private
+key. Proof of possession does not prove human identity or approve a role.
+
+The key owner sends only one OpenSSH `ssh-ed25519` public-key file. The
+maintainer uses a stable pseudonymous principal ID and compiles a short-lived
+challenge into an empty candidate directory:
+
+```text
+python tools/compile_key_challenge.py --root . --public-key owner.pub --principal-id contributor-01 --role contributor --issued-at 2026-09-09T12:00:00Z --expires-at 2026-09-10T12:00:00Z --output-dir ceremony-candidate
+```
+
+The owner signs the exact generated challenge on their own system. This command
+uses the fixed namespace and SHA-256 profile required by the verifier:
+
+```text
+ssh-keygen -Y sign -f /owner/private/key -n universal-benchmark-key-enrollment -O hashalg=sha256 ceremony-candidate/<challenge-sha256>.json
+```
+
+Only the challenge, detached `.sig`, and original `.pub` return to the
+maintainer. Compile the event into another empty candidate directory:
+
+```text
+python tools/compile_key_event.py --root . --challenge ceremony-candidate/<challenge-sha256>.json --signature ceremony-candidate/<challenge-sha256>.json.sig --event-at 2026-09-09T12:05:00Z --reason "reviewed contributor enrollment" --output-dir event-candidate
+```
+
+Review the pseudonymous identity binding, role, challenge window, exact event,
+and successful tests. Then add only that event to `policy/key-events/`, compile
+the derived snapshot to an absent path, review the exact difference, and use
+both files in a maintainer-controlled pull request:
 
 ```text
 python tools/compile_key_policy.py --root . --output public-keys.candidate.json
@@ -55,4 +82,6 @@ python tools/compile_key_policy.py --root . --output public-keys.candidate.json
 
 Issuer, contributor, and validator are explicit roles. A contributor and their
 independent validator must use distinct keys and distinct reviewed principals.
-Private keys remain outside this repository and every agent context.
+The public-key comment is discarded because it is not identity evidence and
+can contain personal data. Private keys remain outside this repository and
+every agent context.

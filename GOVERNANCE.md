@@ -27,7 +27,15 @@ identity is current while retaining the earlier bytes.
 ## Key lifecycle
 
 `policy/key-events/` is append-only. Enrollment binds a public key to one
-reviewed principal and allowed roles. Revocation removes future authority but
-does not remove the event or earlier signed evidence. The public-key map is
-derived from the complete ordered event set. Contributor and validator roles
-cannot belong to the same key or reviewed principal.
+pseudonymous reviewed principal and allowed roles. A v2 enrollment must retain
+a valid short-lived SSHSIG proof of private-key possession bound to the exact
+prior policy history. Possession, identity review, and role approval are three
+separate checks. Revocation removes future authority but does not remove the
+event or earlier signed evidence. The public-key map is derived from the
+complete ordered event set. Contributor and validator roles cannot belong to
+the same key or reviewed principal.
+
+Real-person mappings and identity evidence remain outside this public
+repository. Public-key comments are not identity evidence and are not retained.
+Private keys never enter repository or agent custody. Each enrollment is a
+separate maintainer-reviewed change; a compiled candidate has no authority.

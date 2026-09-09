@@ -3,6 +3,11 @@
 Before submitting data, obtain an approved benchmark request and complete the
 separate public-key enrollment review.
 
+Enrollment begins with an OpenSSH `ssh-ed25519` public key and an externally
+reviewed pseudonymous principal ID. The owner signs a short-lived policy-bound
+challenge on their own system. Do not send a private key. Proof of possession
+does not replace maintainer identity and role review.
+
 Submit canonical UTF-8 JSON. The filename must be the document's canonical
 SHA-256 plus `.json`. Contributor pull requests may add files only in these
 paths:
@@ -25,4 +30,3 @@ submit code for CI to execute.
 
 Never include private keys, tokens, credentials, private prompts, personal
 data, or mutable `latest` artifact links.
-

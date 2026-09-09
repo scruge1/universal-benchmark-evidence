@@ -12,7 +12,6 @@ import hashlib
 import importlib.metadata
 import importlib.resources
 import json
-import os
 import re
 import subprocess
 import tempfile
@@ -35,11 +34,13 @@ from universal_benchmark_registry import (
 )
 from universal_model_router import canonical_sha256
 
+from key_ceremony import EVENT_SCHEMA, KeyCeremonyError, validate_enrollment_event
+
 
 RAW_MANIFEST_SCHEMA = "universal-benchmark-raw-manifest/v1"
 POLICY_SCHEMA = "universal-benchmark-exchange-software-policy/v1"
 KEY_MAP_SCHEMA = "universal-benchmark-public-key-map/v1"
-KEY_EVENT_SCHEMA = "universal-benchmark-key-event/v1"
+KEY_EVENT_SCHEMA = EVENT_SCHEMA
 KEY_ROLES = {"issuer", "contributor", "validator"}
 DOCUMENT_AREAS = {
     REQUEST_SCHEMA: "requests",
@@ -127,7 +128,7 @@ def _key_events(root: Path, max_bytes: int) -> list[tuple[str, Mapping[str, Any]
             raise ExchangeVerificationError(f"key event must be JSON: {path.name}")
         document = _exact(
             _load_json(path, max_bytes=max_bytes),
-            {"schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "reason", "authority"},
+            {"schema", "event_type", "effective_revision", "event_at", "key_id", "principal_id", "roles", "public_key", "possession_proof", "reason", "authority"},
             "$key_event",
         )
         canonical = canonical_json_bytes(document)
@@ -154,6 +155,7 @@ def derive_key_snapshot(root: Path, max_bytes: int) -> dict[str, Any]:
     known: dict[str, str] = {}
     expected_revision = 2
     previous_time: datetime | None = None
+    prior_event_sha256: list[str] = []
     for digest, event in events:
         if event["effective_revision"] != expected_revision:
             raise ExchangeVerificationError("key event revisions must be contiguous and unique")
@@ -173,6 +175,10 @@ def derive_key_snapshot(root: Path, max_bytes: int) -> dict[str, Any]:
             if {"contributor", "validator"} <= set(roles):
                 raise ExchangeVerificationError("one key cannot be contributor and validator")
             _validate_public_key(key_id, event["public_key"], "$key_event.public_key")
+            try:
+                validate_enrollment_event(event, prior_event_sha256)
+            except KeyCeremonyError as exc:
+                raise ExchangeVerificationError(f"key enrollment proof is invalid: {exc}") from exc
             principal_roles = {role for item in active.values() if item["principal_id"] == principal_id for role in item["roles"]}
             if "contributor" in principal_roles | set(roles) and "validator" in principal_roles | set(roles):
                 raise ExchangeVerificationError("one principal cannot be contributor and validator")
@@ -188,13 +194,14 @@ def derive_key_snapshot(root: Path, max_bytes: int) -> dict[str, Any]:
                 "revoked_at": None,
             }
         else:
-            if roles != [] or event["public_key"] is not None:
+            if roles != [] or event["public_key"] is not None or event["possession_proof"] is not None:
                 raise ExchangeVerificationError("revocation cannot add key material or roles")
             if key_id not in active or known.get(key_id) != principal_id:
                 raise ExchangeVerificationError("revocation requires the active matching key and principal")
             active[key_id]["status"] = "revoked"
             active[key_id]["revoked_revision"] = event["effective_revision"]
             active[key_id]["revoked_at"] = event["event_at"]
+        prior_event_sha256.append(digest)
     return {
         "schema": KEY_MAP_SCHEMA,
         "revision": 1 + len(events),
