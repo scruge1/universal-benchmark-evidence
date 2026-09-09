@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from verify_exchange import (  # noqa: E402
     ExchangeVerificationError,
     RAW_MANIFEST_SCHEMA,
+    _require_role,
     derive_key_snapshot,
     verify_contributor_paths,
     verify_exchange,
@@ -196,6 +197,29 @@ class ExchangeGuardTests(unittest.TestCase):
         self.assertEqual("revoked", snapshot["principals"][key_id]["status"])
         self.assertEqual(2, len(snapshot["event_sha256"]))
         verify_exchange(self.root)
+
+    def test_revocation_preserves_historical_role_but_rejects_later_use(self) -> None:
+        key_id, _ = self._key_event("enroll", 2, "retired-person", ["contributor"], "retired")
+        self._key_event("revoke", 3, "retired-person", [], "retired")
+        snapshot = self._refresh_key_snapshot()
+
+        metadata = _require_role(
+            key_id,
+            "contributor",
+            snapshot["principals"],
+            "$historical_contribution.contributor",
+            "2026-09-09T00:00:02.500000Z",
+        )
+        self.assertEqual("revoked", metadata["status"])
+
+        with self.assertRaisesRegex(ExchangeVerificationError, "revoked at document time"):
+            _require_role(
+                key_id,
+                "contributor",
+                snapshot["principals"],
+                "$later_contribution.contributor",
+                "2026-09-09T00:00:03Z",
+            )
 
     def test_key_event_revision_gap_fails(self) -> None:
         self._key_event("enroll", 3, "late-person", ["issuer"], "late")
