@@ -41,3 +41,4 @@ python -m unittest discover -s tests -v
 The current repository is an offline candidate. It has no real key, real
 evidence, public catalog, endpoint, host, dashboard, or rig authority.
 
+Temporary hosted negative: a contributor cannot change this control-plane file.
